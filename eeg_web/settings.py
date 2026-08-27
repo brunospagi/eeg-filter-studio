@@ -40,6 +40,20 @@ DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() in ('1', 'true', 'yes')
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()]
 
+# Behind Traefik (or any reverse proxy) TLS is terminated before the request
+# reaches Gunicorn, so Django would otherwise think every request is plain
+# HTTP -- that mismatch is what makes CSRF reject an HTTPS POST (login,
+# upload, etc.) with "CSRF verification failed". This tells Django to trust
+# the X-Forwarded-Proto header Traefik sets, and to trust the real hosts as
+# CSRF origins (Django compares the Origin header's scheme+host against this
+# list; localhost/127.0.0.1 are treated as plain http, everything else as
+# https since that's how they're actually reached in this deployment).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+CSRF_TRUSTED_ORIGINS = [
+    f"http://{h}" if h in ('localhost', '127.0.0.1') else f"https://{h}"
+    for h in ALLOWED_HOSTS
+]
+
 
 # Application definition
 
