@@ -1,0 +1,14 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.env
+db.sqlite3
+data/uploads/
+staticfiles/
+node_modules/
+.vscode/
+.idea/
+analysis/output/
+template_work/
+*.md

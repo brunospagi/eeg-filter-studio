@@ -1,0 +1,259 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EEG Filter Studio — OpenBCI</title>
+<link rel="stylesheet" href="{% static 'signals/style.css' %}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+</head>
+<body>
+{% csrf_token %}
+<header class="topbar">
+  <h1>EEG Filter Studio</h1>
+  <span class="subtitle">Ajuste fino de sinais OpenBCI (Cyton, 8 canais)</span>
+  <span class="topbar-user">
+    {{ user.username }}
+    <form method="post" action="{% url 'logout' %}">
+      {% csrf_token %}
+      <button type="submit" class="link-btn">Sair</button>
+    </form>
+  </span>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <section id="upload-section" class="panel">
+      <h2>1. Dados</h2>
+      <label class="row">Nome do teste (opcional)
+        <input type="text" id="upload-name" placeholder="ex.: P03 — João, olhos">
+      </label>
+      <label class="row">Nome da pessoa
+        <input type="text" id="upload-participant" placeholder="opcional">
+      </label>
+      <label class="row">Sexo
+        <select id="upload-sex">
+          <option value="" selected>Não informado</option>
+          <option value="F">Feminino</option>
+          <option value="M">Masculino</option>
+          <option value="outro">Outro</option>
+        </select>
+      </label>
+      <label class="row">Idade
+        <input type="number" id="upload-age" min="0" max="120" step="1" placeholder="opcional">
+      </label>
+      <label class="row eyes-test-row">
+        <input type="checkbox" id="upload-is-eyes-test">
+        Este teste segue o protocolo olhos fechados/abertos (5 marcadores)
+      </label>
+      <div class="hint">
+        Marque a opção acima só quando a coleta seguir o protocolo fechado→aberto→fechado→aberto — outros tipos de
+        teste feitos nesta ferramenta não devem ser marcados, para não aparecerem como "olhos" na comparação.
+      </div>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept=".csv" hidden>
+        <span id="dropzone-label">Arraste o CSV do OpenBCI aqui ou clique para escolher</span>
+      </label>
+      <div id="dataset-info" class="info-box hidden">
+        <div><b>Taxa de amostragem:</b> <span id="info-fs"></span> Hz</div>
+        <div><b>Amostras:</b> <span id="info-n"></span></div>
+        <div><b>Duração:</b> <span id="info-dur"></span> s</div>
+        <div><b>Marcadores:</b> <span id="info-markers"></span></div>
+      </div>
+      <div id="upload-error" class="error hidden"></div>
+    </section>
+
+    <section id="controls-section" class="panel disabled">
+      <h2>2. Canais</h2>
+      <div id="channel-list" class="channel-list"></div>
+
+      <h2>3. Filtros</h2>
+
+      <fieldset class="filter-group">
+        <legend><label><input type="checkbox" id="detrend-enabled" checked> Remover offset / tendência</label></legend>
+        <label class="row">Tipo
+          <select id="detrend-kind">
+            <option value="constant" selected>Constante (remove DC)</option>
+            <option value="linear">Linear (remove drift)</option>
+          </select>
+        </label>
+        <details class="formula-box">
+          <summary>Ver fórmula</summary>
+          <div class="formula">
+            <p><b>Constante</b> — remove o nível médio (DC) do sinal:</p>
+            <p class="tex">$$x'[n] = x[n] - \bar{x}, \qquad \bar{x} = \frac{1}{N}\sum_{n=0}^{N-1} x[n]$$</p>
+            <p><b>Linear</b> — remove uma reta de tendência ajustada por mínimos quadrados:</p>
+            <p class="tex">$$x'[n] = x[n] - (a\,n + b), \quad \text{onde } a,b \text{ minimizam } \sum_n (x[n]-an-b)^2$$</p>
+          </div>
+        </details>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend><label><input type="checkbox" id="bandpass-enabled" checked> Passa-banda</label></legend>
+        <label class="row">Corte inferior (Hz)
+          <input type="number" id="bandpass-low" value="1" min="0.1" step="0.1">
+        </label>
+        <label class="row">Corte superior (Hz)
+          <input type="number" id="bandpass-high" value="40" min="1" step="0.5">
+        </label>
+        <label class="row">Ordem <span id="bandpass-order-val">4</span>
+          <input type="range" id="bandpass-order" value="4" min="1" max="8" step="1">
+        </label>
+        <details class="formula-box">
+          <summary>Ver fórmula</summary>
+          <div class="formula">
+            <p>Filtro Butterworth de ordem $N$ — resposta em magnitude "maximamente plana" na banda passante:</p>
+            <p class="tex">$$|H(j\omega)|^2 = \frac{1}{1+\left(\dfrac{\omega}{\omega_c}\right)^{2N}}$$</p>
+            <p>O passa-banda é a combinação de um passa-altas ($f_{baixo}$) com um passa-baixas ($f_{alto}$). Para não distorcer a fase (importante em EEG), aplicamos para frente e para trás:</p>
+            <p class="tex">$$y[n] = \text{filtfilt}(b, a,\, x[n])$$</p>
+          </div>
+        </details>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend><label><input type="checkbox" id="notch-enabled" checked> Notch (rede elétrica)</label></legend>
+        <label class="row">Frequência
+          <select id="notch-freq">
+            <option value="60" selected>60 Hz</option>
+            <option value="50">50 Hz</option>
+          </select>
+        </label>
+        <label class="row">Q (seletividade) <span id="notch-q-val">30</span>
+          <input type="range" id="notch-q" value="30" min="5" max="80" step="1">
+        </label>
+        <label class="row">Harmônicos
+          <input type="number" id="notch-harmonics" value="1" min="1" max="4" step="1">
+        </label>
+        <details class="formula-box">
+          <summary>Ver fórmula</summary>
+          <div class="formula">
+            <p>Filtro IIR rejeita-faixa estreito, centrado em $f_0$ (a frequência da rede elétrica):</p>
+            <p class="tex">$$H(z) = \frac{1 - 2\cos(\omega_0)z^{-1} + z^{-2}}{1 - 2r\cos(\omega_0)z^{-1} + r^2 z^{-2}}$$</p>
+            <p class="tex">$$\omega_0 = \frac{2\pi f_0}{f_s}, \qquad Q = \frac{f_0}{\Delta f}$$</p>
+            <p>Quanto maior o $Q$, mais estreita a faixa rejeitada ao redor de $f_0$.</p>
+          </div>
+        </details>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend><label><input type="checkbox" id="saturation-enabled" checked> Detectar saturação (ADC)</label></legend>
+        <label class="row">Limiar (µV)
+          <input type="number" id="saturation-threshold" value="187000" min="1000" step="500">
+        </label>
+        <div class="hint">Amostras acima do limiar ficam marcadas em vermelho no gráfico (canal travado no rail do ADC).</div>
+        <details class="formula-box">
+          <summary>Ver fórmula</summary>
+          <div class="formula">
+            <p>Uma amostra é marcada como saturada quando ultrapassa o limiar $V_{sat}$ (o fundo de escala do conversor A/D):</p>
+            <p class="tex">$$|x[n]| \ge V_{sat}$$</p>
+            <p>No ADS1299 do OpenBCI Cyton (ganho $G=24$, $V_{ref}=4.5\text{V}$):</p>
+            <p class="tex">$$V_{sat} = \frac{V_{ref}}{G}\cdot\frac{2^{23}-1}{2^{23}}\times 10^{6} \approx 187500\ \mu V$$</p>
+          </div>
+        </details>
+      </fieldset>
+
+      <fieldset class="filter-group">
+        <legend><label><input type="checkbox" id="interpolate-enabled" checked> Mitigar saturação antes de filtrar</label></legend>
+        <label class="row">Duração máx. p/ interpolar (ms)
+          <input type="number" id="max-gap-ms" value="250" min="10" step="10">
+        </label>
+        <div class="hint">
+          Trechos saturados curtos (≤ duração acima) são interpolados linearmente antes de rodar os filtros — evita que o
+          <i>ringing</i> do filtro contamine as amostras vizinhas. Trechos mais longos também são interpolados (para o filtro
+          não quebrar), mas ficam marcados em cinza no gráfico como <b>descartados</b>: não há sinal real ali, então não
+          confie nesse trecho para análise.
+        </div>
+        <details class="formula-box">
+          <summary>Ver fórmula</summary>
+          <div class="formula">
+            <p>Para cada trecho saturado entre as amostras válidas vizinhas $x[a]$ (antes) e $x[b]$ (depois), com $b-a$ amostras de gap:</p>
+            <p class="tex">$$x[a+k] = x[a] + k\cdot\frac{x[b]-x[a]}{b-a}, \qquad k=1,\dots,b-a-1$$</p>
+          </div>
+        </details>
+      </fieldset>
+
+      <div class="actions">
+        <button id="apply-btn" class="btn primary">Aplicar filtros</button>
+        <button id="download-btn" class="btn">Baixar CSV filtrado</button>
+      </div>
+      <div class="actions">
+        <button id="download-bands-btn" class="btn">Baixar CSV de bandas (teta/alfa/beta/gama)</button>
+      </div>
+      <div id="process-error" class="error hidden"></div>
+      <div id="auto-apply-hint" class="hint">Os gráficos atualizam automaticamente ao mudar um parâmetro.</div>
+    </section>
+
+    <section id="tests-section" class="panel">
+      <h2>4. Comparar testes
+        <button id="tests-refresh-btn" class="btn small" type="button" title="Atualizar lista">&#8635;</button>
+      </h2>
+      <div class="hint">Cada CSV enviado fica cadastrado (nome acima) e continua disponível depois. Selecione 2 ou mais para comparar.</div>
+      <div id="tests-list" class="tests-list"></div>
+      <div class="actions">
+        <button id="tests-compare-btn" class="btn primary" disabled>Comparar selecionados</button>
+      </div>
+      <div id="tests-error" class="error hidden"></div>
+    </section>
+  </aside>
+
+  <section class="plot-area">
+    <div id="plot-toolbar" class="plot-toolbar hidden">
+      <div class="view-toggle" role="tablist">
+        <button id="mode-grid-btn" class="mode-btn active" type="button">Grade — todos os canais</button>
+        <button id="mode-focus-btn" class="mode-btn" type="button">Foco — um canal por vez</button>
+        <button id="mode-bands-btn" class="mode-btn" type="button">Bandas — teta/alfa/beta/gama</button>
+        <button id="mode-compare-btn" class="mode-btn" type="button">Comparar testes</button>
+      </div>
+      <div id="compare-legend" class="legend hidden"></div>
+      <div id="focus-nav" class="focus-nav hidden">
+        <button id="focus-prev" class="btn small" type="button" title="Canal anterior">&larr;</button>
+        <select id="focus-channel-select"></select>
+        <button id="focus-next" class="btn small" type="button" title="Próximo canal">&rarr;</button>
+        <span id="focus-sat-badge" class="sat-badge"></span>
+      </div>
+      <div id="bands-legend" class="legend hidden">
+        <span class="legend-item"><i class="swatch band-theta"></i>Teta (4–8 Hz)</span>
+        <span class="legend-item"><i class="swatch band-alpha"></i>Alfa (8–13 Hz)</span>
+        <span class="legend-item"><i class="swatch band-beta"></i>Beta (13–30 Hz)</span>
+        <span class="legend-item"><i class="swatch band-gamma"></i>Gama (30–45 Hz)</span>
+      </div>
+      <div id="main-legend" class="legend">
+        <span class="legend-item"><i class="swatch raw"></i>Sinal bruto</span>
+        <span class="legend-item"><i class="swatch filtered"></i>Sinal filtrado</span>
+        <span class="legend-item"><i class="swatch sat"></i>Amostra saturada</span>
+        <span class="legend-item"><i class="swatch excluded"></i>Trecho descartado</span>
+        <span class="legend-item"><i class="swatch marker"></i>Evento marcado</span>
+      </div>
+    </div>
+    <div id="quality-banner" class="quality-banner hidden"></div>
+    <div id="plot-scroll" class="plot-scroll">
+      <div id="plot" class="plot"></div>
+      <div id="focus-plot" class="focus-plot hidden"></div>
+      <div id="bands-plot" class="focus-plot hidden"></div>
+      <div id="bands-compare-wrap" class="bands-compare-wrap hidden">
+        <h3>Comparação — olhos fechados × abertos (<span id="bands-compare-channel"></span>)</h3>
+        <div id="bands-compare-plot" class="bands-compare-plot"></div>
+        <div id="bands-compare-hint" class="hint hidden"></div>
+      </div>
+      <div id="compare-plot-wrap" class="focus-plot hidden">
+        <div id="compare-hint" class="hint hidden"></div>
+        <h3>Potência por banda (<span id="compare-channel"></span>)</h3>
+        <div id="compare-bar-plot" class="bands-compare-plot"></div>
+        <h3>Sinal filtrado sobreposto (<span id="compare-channel-2"></span>)</h3>
+        <div id="compare-signal-plot" class="compare-signal-plot"></div>
+      </div>
+    </div>
+    <div id="timeline-wrap" class="timeline-wrap hidden">
+      <div id="timeline" class="timeline"></div>
+    </div>
+    <div id="plot-placeholder" class="placeholder">Envie um CSV para começar.</div>
+  </section>
+</main>
+
+<script src="{% static 'signals/app.js' %}"></script>
+</body>
+</html>

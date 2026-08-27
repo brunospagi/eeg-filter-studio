@@ -1,0 +1,7 @@
+Django>=5.2,<6
+numpy>=2.0
+scipy>=1.14
+pandas>=2.2
+python-dotenv>=1.0
+gunicorn>=22.0
+whitenoise>=6.6

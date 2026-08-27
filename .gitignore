@@ -1,0 +1,32 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Django
+db.sqlite3
+staticfiles/
+media/
+
+# App data (uploaded EEG recordings, session cache)
+data/uploads/
+
+# Node (docx-js scripts under analysis/, if any local deps get installed)
+node_modules/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# Analysis scripts reference participants by first name (in VALID_FILES /
+# CODE_MAP) and their outputs -- research data, not app source. Kept local.
+analysis/
+
+# Scientific-article deliverable (participant/advisor data, not app source)
+template_work/

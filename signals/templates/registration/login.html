@@ -1,0 +1,81 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entrar — EEG Filter Studio</title>
+<link rel="stylesheet" href="{% static 'signals/style.css' %}">
+<style>
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 28px 26px;
+  }
+  .login-card h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  .login-card .subtitle { color: var(--text-dim); font-size: 0.82rem; margin: 0 0 20px; }
+  .login-card label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px; }
+  .login-card input[type="text"],
+  .login-card input[type="password"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 9px 10px;
+    font-size: 0.9rem;
+  }
+  .login-card button {
+    width: 100%;
+    margin-top: 20px;
+    padding: 10px;
+    border-radius: 7px;
+    border: 1px solid var(--accent-dim);
+    background: var(--accent);
+    color: #0b1120;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .login-card button:hover { filter: brightness(1.05); }
+  .login-errors {
+    margin-top: 14px;
+    padding: 8px 10px;
+    background: rgba(255,107,107,0.12);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    border-radius: 6px;
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>EEG Filter Studio</h1>
+    <p class="subtitle">Laboratório Sinapsense — entre para continuar</p>
+    <form method="post">
+      {% csrf_token %}
+      <label for="id_username">Usuário</label>
+      {{ form.username }}
+      <label for="id_password">Senha</label>
+      {{ form.password }}
+      <input type="hidden" name="next" value="{{ next }}">
+      {% if form.errors %}
+        <div class="login-errors">Usuário ou senha incorretos.</div>
+      {% endif %}
+      <button type="submit">Entrar</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>
