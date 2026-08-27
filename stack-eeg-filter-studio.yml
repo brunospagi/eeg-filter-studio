@@ -1,0 +1,79 @@
+version: "3.7"
+
+services:
+
+## --------------------------- EEG FILTER STUDIO --------------------------- ##
+
+  eeg-filter-studio:
+    # ⚠️ ATENÇÃO: Substitua pelo nome/tag corretos da sua imagem Docker
+    # (build + push a partir do Dockerfile do repositório antes do deploy).
+    image: eeg-filter-studio:1.0
+
+    # Sem 'command:' — o entrypoint da imagem (docker-entrypoint.sh) já roda
+    # migrate, collectstatic (WhiteNoise) e cria o admin padrão (seed_admin)
+    # sozinho a cada start, e sobe o Gunicorn na porta 8000 no final.
+
+    environment:
+      # ⚠️ Gere uma chave nova para produção (nunca use a de exemplo do repo).
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?defina DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: eeg-pesquisa.spagisistemas.com.br
+
+      # Conta admin criada automaticamente no primeiro start (idempotente —
+      # não mexe se o usuário já existir). Troque a senha após o 1º login.
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:?defina DJANGO_SUPERUSER_PASSWORD}
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
+
+    # Único volume: guarda o banco SQLite (data/db.sqlite3) e as gravações
+    # EEG cadastradas (data/uploads/*.npz + metadados) — precisa persistir
+    # entre deploys, ao contrário dos estáticos (regenerados pelo
+    # collectstatic a cada start, servidos em processo pelo WhiteNoise).
+    volumes:
+      - eeg_filter_studio_data:/app/data
+
+    networks:
+      - SpagiSistemas
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/login/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+      update_config:
+        order: start-first
+        failure_action: rollback
+
+      labels:
+        - traefik.enable=true
+
+        # Router: eeg-filter-studio
+        - traefik.http.routers.eeg-filter-studio.rule=Host(`eeg-pesquisa.spagisistemas.com.br`)
+        - traefik.http.routers.eeg-filter-studio.entrypoints=websecure
+        - traefik.http.routers.eeg-filter-studio.tls=true
+        - traefik.http.routers.eeg-filter-studio.tls.certresolver=letsencryptresolver
+
+        # Service: Porta interna do Gunicorn (8000)
+        - traefik.http.routers.eeg-filter-studio.service=eeg-filter-studio
+        - traefik.http.services.eeg-filter-studio.loadbalancer.server.port=8000
+
+## --------------------------- VOLUMES --------------------------- ##
+
+volumes:
+  eeg_filter_studio_data:
+
+## --------------------------- REDES --------------------------- ##
+
+networks:
+  SpagiSistemas:
+    external: true
+    name: SpagiSistemas
