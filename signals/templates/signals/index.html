@@ -215,6 +215,10 @@
         <button id="focus-next" class="btn small" type="button" title="Próximo canal">&rarr;</button>
         <span id="focus-sat-badge" class="sat-badge"></span>
       </div>
+      <button id="mark-artifact-btn" class="btn small artifact-toggle hidden" type="button"
+              title="Arraste sobre um trecho com artefato (piscada, mandíbula, etc.) para marcá-lo">
+        Marcar artefato
+      </button>
       <div id="bands-legend" class="legend hidden">
         <span class="legend-item"><i class="swatch band-theta"></i>Teta (4–8 Hz)</span>
         <span class="legend-item"><i class="swatch band-alpha"></i>Alfa (8–13 Hz)</span>
@@ -227,7 +231,18 @@
         <span class="legend-item"><i class="swatch sat"></i>Amostra saturada</span>
         <span class="legend-item"><i class="swatch excluded"></i>Trecho descartado</span>
         <span class="legend-item"><i class="swatch marker"></i>Evento marcado</span>
+        <span class="legend-item"><i class="swatch artifact"></i>Artefato marcado</span>
       </div>
+    </div>
+    <div id="artifact-mark-hint" class="quality-banner hidden">
+      Arraste sobre o trecho do gráfico com o artefato (piscada, fechamento forçado dos olhos, mandíbula, língua,
+      varredura ocular) para marcá-lo. Ele fica sombreado em vermelho e é excluído do cálculo de potência de banda em
+      todos os canais — inclusive nas comparações — seguindo a prática recomendada por Anghinah et al. (Arq.
+      Neuropsiquiatr.): identificar artefatos por inspeção visual <i>antes</i> da FFT, já que não dá para corrigi-los depois.
+    </div>
+    <div id="artifacts-bar" class="artifacts-bar hidden">
+      <span class="artifacts-bar-label">Artefatos marcados:</span>
+      <div id="artifacts-list" class="artifacts-list"></div>
     </div>
     <div id="quality-banner" class="quality-banner hidden"></div>
     <div id="plot-scroll" class="plot-scroll">

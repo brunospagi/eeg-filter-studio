@@ -6,6 +6,8 @@
     channelNames: [],
     markers: [],
     isEyesTest: false,
+    artifactRanges: [],
+    markingArtifact: false,
     fs: null,
     duration: null,
     viewMode: "grid", // "grid" | "focus" | "bands" | "compare"
@@ -82,6 +84,19 @@
       line: { color: "#94a3b8", width: 1, dash: "dot" },
     });
     return { shapes, annotations };
+  }
+
+  // Manually-marked artifact ranges (blinks, jaw clench, etc.) -- shaded red,
+  // full-height, tagged `_kind: "system"` so the plotly_relayout handler can
+  // tell them apart from a rectangle the user just drew. Applies to every
+  // channel (an artifact like a blink shows on all of them), independent of
+  // channel selection.
+  function artifactShapes(ranges) {
+    return (ranges || []).map(([t0, t1]) => ({
+      type: "rect", xref: "x", yref: "paper", x0: t0, x1: t1, y0: 0, y1: 1,
+      fillcolor: "rgba(239,68,68,0.15)", line: { color: "#ef4444", width: 1 },
+      layer: "above", _kind: "system",
+    }));
   }
 
   const el = (id) => document.getElementById(id);
@@ -171,6 +186,10 @@
       state.duration = data.duration_s;
       state.lastBandsData = null;
       state.lastBandsCompareData = null;
+      state.artifactRanges = [];
+      setArtifactMarking(false);
+      renderArtifactsBar();
+      el("mark-artifact-btn").classList.remove("hidden");
       fetchTestsList();
 
       el("dropzone-label").textContent = `${file.name} — ${data.n_samples} amostras`;
@@ -318,6 +337,8 @@
       });
       state.lastData = data;
       state.lastChannels = channels;
+      state.artifactRanges = data.artifact_ranges || [];
+      renderArtifactsBar();
       if (!channels.includes(state.focusChannel)) state.focusChannel = channels[0];
       updateSaturationBadges(data);
       updateQualityBanner(data, channels);
@@ -560,6 +581,13 @@
           y0: 0, y1: 1, line: { color: testColor(i), width: 1.2, dash: "dot" },
         });
       });
+      const testArtifacts = (data.artifact_ranges && data.artifact_ranges[t.token]) || [];
+      testArtifacts.forEach(([t0, t1]) => {
+        shapes.push({
+          type: "rect", xref: "x", yref: "paper", x0: t0, x1: t1, y0: 0, y1: 1,
+          fillcolor: "rgba(239,68,68,0.12)", line: { color: "#ef4444", width: 1 }, layer: "above",
+        });
+      });
     });
     const layout = {
       showlegend: false,
@@ -644,6 +672,8 @@
     const markerLayout = markerConditionLayout(state.markers, { fontSize: 9 });
     layoutShapes.push(...markerLayout.shapes);
     annotations.push(...markerLayout.annotations);
+    layoutShapes.push(...artifactShapes(state.artifactRanges));
+    layoutShapes.forEach((s) => { s._kind = "system"; });
 
     const fullRange = [t[0], t[t.length - 1]];
     const satColor = (pct) => (pct >= 20 ? "#ff6b6b" : pct >= 5 ? "#facc15" : "#9aa4bd");
@@ -658,6 +688,8 @@
       shapes: layoutShapes,
       annotations,
       hovermode: "x unified",
+      dragmode: state.markingArtifact ? "drawrect" : "zoom",
+      newshape: { fillcolor: "rgba(239,68,68,0.2)", line: { color: "#ef4444", width: 1.5 } },
     };
     channels.forEach((name, i) => {
       const axisNum = i + 1;
@@ -683,6 +715,7 @@
     const plotDiv = el("plot");
     plotDiv.style.height = `${Math.max(600, n * 160)}px`;
     Plotly.react(plotDiv, traces, layout, { responsive: true, displaylogo: false });
+    wireArtifactDrawing(plotDiv);
   }
 
   function buildFocusChannelSelect(channels, preferred) {
@@ -751,6 +784,8 @@
     }));
     const markerLayout = markerConditionLayout(state.markers, { fontSize: 11 });
     shapes.push(...markerLayout.shapes);
+    shapes.push(...artifactShapes(state.artifactRanges));
+    shapes.forEach((s) => { s._kind = "system"; });
     const annotations = markerLayout.annotations;
 
     const layout = {
@@ -762,6 +797,8 @@
       shapes,
       annotations,
       hovermode: "x unified",
+      dragmode: state.markingArtifact ? "drawrect" : "zoom",
+      newshape: { fillcolor: "rgba(239,68,68,0.2)", line: { color: "#ef4444", width: 1.5 } },
       xaxis: {
         title: { text: "Tempo (s)" },
         range: [t[0], t[t.length - 1]],
@@ -777,6 +814,7 @@
 
     const focusDiv = el("focus-plot");
     Plotly.react(focusDiv, traces, layout, { responsive: true, displaylogo: false });
+    wireArtifactDrawing(focusDiv);
   }
 
   function renderBands(data, channelName) {
@@ -795,6 +833,8 @@
     const traces = [];
     const fullRange = [t[0], t[t.length - 1]];
     const markerLayout = markerConditionLayout(state.markers, { fontSize: 9 });
+    const bandsShapes = [...markerLayout.shapes, ...artifactShapes(state.artifactRanges)];
+    bandsShapes.forEach((s) => { s._kind = "system"; });
     const layout = {
       showlegend: false,
       margin: { t: 20, r: 20, b: 40, l: 70 },
@@ -802,7 +842,7 @@
       plot_bgcolor: "#171d2c",
       font: { color: "#e6e9f2", size: 11 },
       hovermode: "x unified",
-      shapes: markerLayout.shapes,
+      shapes: bandsShapes,
       annotations: markerLayout.annotations,
     };
 
@@ -899,6 +939,101 @@
     Plotly.react(el("bands-compare-plot"), traces, layout, { responsive: true, displaylogo: false });
   }
 
+  // ---- artifact marking (blinks, jaw clench, etc.) -----------------------
+  // Anghinah et al. (Arq. Neuropsiquiatr., "Artefatos biológicos no EEG
+  // quantitativo"): artifacts distort spectral/topographic estimates and
+  // can't be corrected after the FFT/bandpass step runs, so the reliable
+  // fix is visual identification *before* that step, not automatic
+  // detection. This lets a student drag over a contaminated stretch on the
+  // raw/filtered trace (Grade or Foco) and exclude it from every band-power
+  // calculation everywhere -- Bandas, the closed/open comparison, and the
+  // cross-test comparison.
+
+  function setArtifactMarking(on) {
+    state.markingArtifact = on;
+    el("mark-artifact-btn").classList.toggle("active", on);
+    el("artifact-mark-hint").classList.toggle("hidden", !on);
+    // Re-render the currently visible single-recording plot so its dragmode
+    // actually switches to/from "drawrect".
+    if (state.lastData && (state.viewMode === "grid" || state.viewMode === "focus")) {
+      renderAll(state.lastData, state.lastChannels);
+    }
+  }
+
+  async function saveArtifactRanges() {
+    if (!state.token) return;
+    try {
+      await postJSON("/api/artifacts/save/", { token: state.token, ranges: state.artifactRanges });
+    } catch (err) {
+      showError("process-error", err.message);
+    }
+    renderArtifactsBar();
+    // Re-run the pipeline so band power / comparisons everywhere reflect the
+    // updated exclusion immediately -- applyFilters() already re-fetches
+    // Bandas/comparison data and re-renders the active view when needed.
+    await applyFilters();
+  }
+
+  function addArtifactRange(t0, t1) {
+    state.artifactRanges.push([Math.min(t0, t1), Math.max(t0, t1)]);
+    saveArtifactRanges();
+  }
+
+  function removeArtifactRange(index) {
+    state.artifactRanges.splice(index, 1);
+    saveArtifactRanges();
+  }
+
+  function renderArtifactsBar() {
+    const bar = el("artifacts-bar");
+    const list = el("artifacts-list");
+    list.innerHTML = "";
+    if (!state.artifactRanges.length) {
+      bar.classList.add("hidden");
+      return;
+    }
+    bar.classList.remove("hidden");
+    state.artifactRanges.forEach(([t0, t1], i) => {
+      const chip = document.createElement("span");
+      chip.className = "artifact-chip";
+      const label = document.createElement("span");
+      label.textContent = `${t0.toFixed(1)}–${t1.toFixed(1)}s`;
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.textContent = "✕";
+      delBtn.title = "Remover esta marcação de artefato";
+      delBtn.addEventListener("click", () => removeArtifactRange(i));
+      chip.appendChild(label);
+      chip.appendChild(delBtn);
+      list.appendChild(chip);
+    });
+  }
+
+  // Plotly's shape-drawing mode (dragmode:"drawrect") appends a plain shape
+  // to the div's own layout.shapes when the user finishes a drag -- it has
+  // no `_kind` tag (every shape *we* add programmatically does, see
+  // artifactShapes/markerConditionLayout), so any untagged shape found after
+  // a relayout is exactly one the user just drew.
+  function wireArtifactDrawing(plotDiv) {
+    // Plotly.react() preserves the div's identity (and any .on() listeners
+    // already attached to it) across re-renders, so without this guard every
+    // render would stack another listener and one drawn rectangle would fire
+    // addArtifactRange() once per accumulated listener.
+    if (plotDiv._artifactWired) return;
+    plotDiv._artifactWired = true;
+    plotDiv.on("plotly_relayout", () => {
+      if (!state.markingArtifact) return;
+      const shapes = plotDiv.layout.shapes || [];
+      const drawn = shapes.find((s) => !s._kind);
+      if (!drawn) return;
+      addArtifactRange(drawn.x0, drawn.x1);
+    });
+  }
+
+  function setupArtifactMarking() {
+    el("mark-artifact-btn").addEventListener("click", () => setArtifactMarking(!state.markingArtifact));
+  }
+
   function setViewMode(mode) {
     state.viewMode = mode;
     el("mode-grid-btn").classList.toggle("active", mode === "grid");
@@ -916,6 +1051,7 @@
     el("compare-plot-wrap").classList.toggle("hidden", mode !== "compare");
     el("compare-legend").classList.toggle("hidden", mode !== "compare");
     el("timeline-wrap").classList.toggle("hidden", mode === "compare" || !state.lastData);
+    el("mark-artifact-btn").classList.toggle("hidden", !(state.lastData && (mode === "grid" || mode === "focus")));
 
     if (mode === "compare") {
       renderCompareAll();
@@ -1096,6 +1232,7 @@
   setupControlListeners();
   setupViewControls();
   setupTestsControls();
+  setupArtifactMarking();
   setupFormulaRendering();
   fetchTestsList();
 })();

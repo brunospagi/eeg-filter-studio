@@ -117,6 +117,27 @@ def mask_to_time_ranges(mask_col: np.ndarray, timestamps: np.ndarray) -> list[li
     return [[float(timestamps[start]), float(timestamps[end - 1])] for start, end in _runs(mask_col)]
 
 
+def artifact_mask_from_ranges(ranges: list | None, timestamps: np.ndarray) -> np.ndarray:
+    """1-D boolean mask, True wherever `timestamps` falls inside one of the
+    manually-marked artifact ranges ([t0, t1] pairs in seconds).
+
+    Unlike ADC saturation, artifacts such as blinks, forced eye closure, jaw
+    clenching, tongue movement or horizontal eye sweep leave no signature the
+    software can detect on its own -- per Anghinah et al. (Arq. Neuropsiquiatr.,
+    "Artefatos biológicos no EEG quantitativo"), the reliable way to keep them
+    out of a quantitative/spectral estimate is visual identification *before*
+    the FFT/bandpass step, since they cannot be corrected after the fact.
+    These ranges are exactly that: student-marked, applied globally (a blink
+    shows on every channel), and excluded from every band-power estimate.
+    """
+    mask = np.zeros(timestamps.shape[0], dtype=bool)
+    for t0, t1 in ranges or []:
+        i0 = int(np.searchsorted(timestamps, min(t0, t1)))
+        i1 = int(np.searchsorted(timestamps, max(t0, t1)))
+        mask[i0:i1] = True
+    return mask
+
+
 def interpolate_saturation(data: np.ndarray, mask: np.ndarray, max_gap_samples: int):
     """Linearly interpolate saturated runs so filters don't see a railed square wave.
 
@@ -173,22 +194,36 @@ def decompose_bands(data: np.ndarray, fs: float, bands: dict | None = None, orde
 BAND_EDGE_MARGIN_S = 2.0
 
 
-def band_power_rms(arr: np.ndarray, fs: float, margin_s: float = BAND_EDGE_MARGIN_S) -> float:
+def band_power_rms(arr: np.ndarray, fs: float, margin_s: float = BAND_EDGE_MARGIN_S,
+                    exclude_mask: np.ndarray | None = None) -> float:
     """RMS of `arr` (1-D), excluding `margin_s` seconds of filter edge
-    transient from each end. Falls back to the full array if it is too short
-    for any margin to leave usable signal."""
+    transient from each end, plus any sample flagged True in `exclude_mask`
+    (saturation and/or manually-marked artifacts -- see `artifact_mask_from_ranges`).
+    Falls back to the full array if nothing would be left otherwise."""
+    n = arr.shape[0]
+    valid = np.ones(n, dtype=bool)
     margin = int(round(margin_s * fs))
-    if arr.size > 2 * margin + 1:
-        arr = arr[margin:-margin]
-    return float(np.sqrt(np.mean(arr ** 2)))
+    if n > 2 * margin:
+        valid[:margin] = False
+        valid[-margin:] = False
+    if exclude_mask is not None:
+        valid &= ~np.asarray(exclude_mask, dtype=bool)
+    selected = arr[valid]
+    if selected.size == 0:
+        selected = arr
+    return float(np.sqrt(np.mean(selected ** 2)))
 
 
-def band_power_by_markers(bands: dict, timestamps: np.ndarray, marker_times: list, fs: float) -> dict | None:
+def band_power_by_markers(bands: dict, timestamps: np.ndarray, marker_times: list, fs: float,
+                           invalid_mask: np.ndarray | None = None) -> dict | None:
     """Split each band's per-channel power into eyes-closed vs. eyes-open
     conditions, using the lab's protocol: 5 marker events bounding 4
     alternating segments (closed1, open1, closed2, open2). The two closed
     (resp. open) segments are combined via RMS-of-RMS, same as the offline
     group-summary analysis, so the web app and the analysis script agree.
+
+    `invalid_mask`, if given, is (n_samples, n_channels) bool -- samples to
+    exclude from every segment's RMS (saturation and/or marked artifacts).
 
     Returns None when fewer than 5 markers are present -- there is nothing
     to segment. Otherwise {band_name: {"closed": array(n_channels), "open": array(n_channels)}}.
@@ -199,9 +234,10 @@ def band_power_by_markers(bands: dict, timestamps: np.ndarray, marker_times: lis
     t0, t1, t2, t3, t4 = times[:5]
     bounds = {"closed1": (t0, t1), "open1": (t1, t2), "closed2": (t2, t3), "open2": (t3, t4)}
 
-    def seg_rms(col: np.ndarray, bnd: tuple) -> float:
+    def seg_rms(col: np.ndarray, bnd: tuple, ch: int) -> float:
         i0, i1 = np.searchsorted(timestamps, bnd[0]), np.searchsorted(timestamps, bnd[1])
-        return band_power_rms(col[i0:i1], fs)
+        exc = invalid_mask[i0:i1, ch] if invalid_mask is not None else None
+        return band_power_rms(col[i0:i1], fs, exclude_mask=exc)
 
     out = {}
     for band_name, arr in bands.items():
@@ -210,22 +246,28 @@ def band_power_by_markers(bands: dict, timestamps: np.ndarray, marker_times: lis
         opened = np.empty(n_channels)
         for ch in range(n_channels):
             col = arr[:, ch]
-            c1, c2 = seg_rms(col, bounds["closed1"]), seg_rms(col, bounds["closed2"])
-            o1, o2 = seg_rms(col, bounds["open1"]), seg_rms(col, bounds["open2"])
+            c1, c2 = seg_rms(col, bounds["closed1"], ch), seg_rms(col, bounds["closed2"], ch)
+            o1, o2 = seg_rms(col, bounds["open1"], ch), seg_rms(col, bounds["open2"], ch)
             closed[ch] = float(np.sqrt(np.mean([c1 ** 2, c2 ** 2])))
             opened[ch] = float(np.sqrt(np.mean([o1 ** 2, o2 ** 2])))
         out[band_name] = {"closed": closed, "open": opened}
     return out
 
 
-def apply_band_pipeline(raw: np.ndarray, fs: float, params: dict) -> dict:
+def apply_band_pipeline(raw: np.ndarray, fs: float, params: dict,
+                         timestamps: np.ndarray | None = None,
+                         artifact_ranges: list | None = None) -> dict:
     """Clean the signal (saturation mitigation -> detrend -> notch, same as
     `apply_pipeline`) and then branch into the canonical EEG bands instead of
     a single generic passband -- this is the per-channel theta/alpha/beta/gamma
     decomposition used for data validation, one band per key in the result.
 
-    Returns dict with 'bands' ({name: filtered array}), 'saturation_mask' and
-    'excluded_mask' (same semantics as `apply_pipeline`).
+    Returns dict with 'bands' ({name: filtered array}), 'saturation_mask',
+    'excluded_mask' (same semantics as `apply_pipeline`), 'artifact_mask'
+    (1-D, manually-marked ranges -- see `artifact_mask_from_ranges`; all-False
+    when `timestamps` isn't given) and 'invalid_mask' (n_samples, n_channels:
+    the union of excluded_mask and artifact_mask, broadcast to every channel
+    -- what every band-power estimate should exclude).
     """
     stage = raw.astype(np.float64, copy=True)
 
@@ -258,15 +300,30 @@ def apply_band_pipeline(raw: np.ndarray, fs: float, params: dict) -> dict:
     band_order = int(params.get("band_order", 4))
     bands = decompose_bands(stage, fs, order=band_order)
 
-    return {"bands": bands, "saturation_mask": saturation_mask, "excluded_mask": excluded_mask}
+    if timestamps is not None:
+        artifact_mask = artifact_mask_from_ranges(artifact_ranges, timestamps)
+    else:
+        artifact_mask = np.zeros(raw.shape[0], dtype=bool)
+    invalid_mask = excluded_mask | artifact_mask[:, None]
+
+    return {
+        "bands": bands,
+        "saturation_mask": saturation_mask,
+        "excluded_mask": excluded_mask,
+        "artifact_mask": artifact_mask,
+        "invalid_mask": invalid_mask,
+    }
 
 
-def apply_pipeline(raw: np.ndarray, fs: float, params: dict) -> dict:
+def apply_pipeline(raw: np.ndarray, fs: float, params: dict,
+                    timestamps: np.ndarray | None = None,
+                    artifact_ranges: list | None = None) -> dict:
     """Run [interpolate saturation] -> detrend -> bandpass -> notch on raw (n_samples, n_channels).
 
     Returns dict with 'filtered' array, 'saturation_mask' and 'excluded_mask'
     (long saturated runs that were interpolated only to keep the filter stable,
-    not because the signal was recovered) boolean arrays.
+    not because the signal was recovered) boolean arrays, plus 'artifact_mask'
+    (1-D, manually-marked ranges -- see `artifact_mask_from_ranges`).
     """
     stage = raw.astype(np.float64, copy=True)
 
@@ -305,4 +362,14 @@ def apply_pipeline(raw: np.ndarray, fs: float, params: dict) -> dict:
             int(notch_params.get("harmonics", 1)),
         )
 
-    return {"filtered": stage, "saturation_mask": saturation_mask, "excluded_mask": excluded_mask}
+    if timestamps is not None:
+        artifact_mask = artifact_mask_from_ranges(artifact_ranges, timestamps)
+    else:
+        artifact_mask = np.zeros(raw.shape[0], dtype=bool)
+
+    return {
+        "filtered": stage,
+        "saturation_mask": saturation_mask,
+        "excluded_mask": excluded_mask,
+        "artifact_mask": artifact_mask,
+    }

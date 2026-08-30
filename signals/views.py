@@ -106,6 +106,27 @@ def api_test_delete(request):
     return JsonResponse({"ok": True})
 
 
+@require_POST
+@login_required_json
+def api_artifacts_save(request):
+    """Persist manually-marked artifact ranges (blinks, jaw clench, etc. --
+    visually identified, per Anghinah et al., since they leave no trace the
+    software can detect the way ADC saturation does) for a registered test."""
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _error("Corpo da requisição não é um JSON válido.")
+    token = body.get("token")
+    if not token:
+        return _error("Campo 'token' ausente.")
+    ranges = body.get("ranges") or []
+    try:
+        parsing.save_artifacts(token, ranges)
+    except parsing.ParseError as exc:
+        return _error(str(exc))
+    return JsonResponse({"ok": True, "count": len(ranges)})
+
+
 def _parse_request_params(request):
     try:
         body = json.loads(request.body.decode("utf-8"))
@@ -142,7 +163,8 @@ def api_process(request):
 
     raw_sel = eeg[:, idx]
     try:
-        result = dsp.apply_pipeline(raw_sel, fs, params)
+        result = dsp.apply_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                     artifact_ranges=session["artifact_ranges"])
     except dsp.FilterError as exc:
         return _error(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -178,6 +200,7 @@ def api_process(request):
         "ok": True,
         "t": np.round(t_dec, 3).tolist(),
         "channels": channels_out,
+        "artifact_ranges": session["artifact_ranges"],
         "decimated": stride > 1,
         "stride": stride,
     })
@@ -209,7 +232,8 @@ def api_bands(request):
 
     raw_sel = eeg[:, idx]
     try:
-        result = dsp.apply_band_pipeline(raw_sel, fs, params)
+        result = dsp.apply_band_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                          artifact_ranges=session["artifact_ranges"])
     except dsp.FilterError as exc:
         return _error(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -218,6 +242,7 @@ def api_bands(request):
     bands = result["bands"]
     band_names = list(bands.keys())
     sat_mask = result["saturation_mask"]
+    invalid_mask = result["invalid_mask"]
 
     t_dec = _decimate(timestamps, MAX_PLOT_POINTS)
     stride = int(np.ceil(len(timestamps) / MAX_PLOT_POINTS)) if len(timestamps) > MAX_PLOT_POINTS else 1
@@ -230,7 +255,9 @@ def api_bands(request):
         for band_name in band_names:
             arr = bands[band_name][:, j]
             band_series[band_name] = np.round(arr[::stride] if stride > 1 else arr, 2).tolist()
-            band_power[band_name] = round(dsp.band_power_rms(arr, fs), 2)  # RMS, uV (edge transient excluded)
+            # RMS, uV -- excludes the filter edge margin, saturated/interpolated
+            # samples, and any manually-marked artifact range (see dsp.band_power_rms).
+            band_power[band_name] = round(dsp.band_power_rms(arr, fs, exclude_mask=invalid_mask[:, j]), 2)
         channels_out[name] = {
             "bands": band_series,
             "band_power_rms_uv": band_power,
@@ -243,6 +270,7 @@ def api_bands(request):
         "band_names": band_names,
         "band_ranges": {k: list(v) for k, v in dsp.EEG_BANDS.items() if k in band_names},
         "channels": channels_out,
+        "artifact_ranges": session["artifact_ranges"],
         "decimated": stride > 1,
         "stride": stride,
     })
@@ -295,13 +323,15 @@ def api_bands_compare(request):
 
     raw_sel = eeg[:, idx]
     try:
-        result = dsp.apply_band_pipeline(raw_sel, fs, params)
+        result = dsp.apply_band_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                          artifact_ranges=session["artifact_ranges"])
     except dsp.FilterError as exc:
         return _error(str(exc))
     except Exception as exc:  # noqa: BLE001
         return _error(f"Erro ao comparar bandas: {exc}", status=500)
 
-    comparison = dsp.band_power_by_markers(result["bands"], timestamps, marker_times, fs)
+    comparison = dsp.band_power_by_markers(result["bands"], timestamps, marker_times, fs,
+                                            invalid_mask=result["invalid_mask"])
     band_names = list(result["bands"].keys())
     names = [channel_names[i] for i in idx]
 
@@ -414,33 +444,42 @@ def api_compare(request):
     band_power = {}
     series = {}
     markers = {}
+    artifacts_by_token = {}
     band_names = None
     band_ranges = None
 
     for token in tokens:
         session = sessions[token]
         markers[token] = session["markers"]
+        artifacts_by_token[token] = session["artifact_ranges"]
         channel_names = session["channel_names"]
         idx = [channel_names.index(c) for c in channels]
         fs = session["fs"]
         timestamps = session["timestamps"]
         raw_sel = session["eeg"][:, idx]
 
+        artifact_ranges = session["artifact_ranges"]
         try:
-            band_result = dsp.apply_band_pipeline(raw_sel, fs, params)
-            filt_result = dsp.apply_pipeline(raw_sel, fs, params)
+            band_result = dsp.apply_band_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                                    artifact_ranges=artifact_ranges)
+            filt_result = dsp.apply_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                              artifact_ranges=artifact_ranges)
         except dsp.FilterError as exc:
             return _error(str(exc))
         except Exception as exc:  # noqa: BLE001
             return _error(f"Erro ao comparar '{tests_meta.get(token, {}).get('name', token)}': {exc}", status=500)
 
         bands = band_result["bands"]
+        invalid_mask = band_result["invalid_mask"]
         if band_names is None:
             band_names = list(bands.keys())
             band_ranges = {k: list(v) for k, v in dsp.EEG_BANDS.items() if k in band_names}
 
         band_power[token] = {
-            name: {band: round(dsp.band_power_rms(bands[band][:, j], fs), 2) for band in band_names}
+            name: {
+                band: round(dsp.band_power_rms(bands[band][:, j], fs, exclude_mask=invalid_mask[:, j]), 2)
+                for band in band_names
+            }
             for j, name in enumerate(channels)
         }
 
@@ -464,6 +503,7 @@ def api_compare(request):
         "band_power": band_power,
         "series": series,
         "markers": markers,
+        "artifact_ranges": artifacts_by_token,
     })
 
 
@@ -490,20 +530,22 @@ def api_download(request):
 
     raw_sel = eeg[:, idx]
     try:
-        result = dsp.apply_pipeline(raw_sel, fs, params)
+        result = dsp.apply_pipeline(raw_sel, fs, params, timestamps=timestamps,
+                                     artifact_ranges=session["artifact_ranges"])
     except dsp.FilterError as exc:
         return _error(str(exc))
 
     filtered = result["filtered"]
     sat_mask = result["saturation_mask"]
     excluded_mask = result["excluded_mask"]
+    artifact_mask = result["artifact_mask"]
     names = [channel_names[i] for i in idx]
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     header = ["Time (s)"]
     for n in names:
-        header += [f"{n}_raw", f"{n}_filtered", f"{n}_saturated", f"{n}_excluded"]
+        header += [f"{n}_raw", f"{n}_filtered", f"{n}_saturated", f"{n}_excluded", f"{n}_artifact"]
     writer.writerow(header)
     for row_i in range(len(timestamps)):
         row = [f"{timestamps[row_i]:.4f}"]
@@ -513,6 +555,7 @@ def api_download(request):
                 f"{filtered[row_i, j]:.3f}",
                 int(sat_mask[row_i, j]),
                 int(excluded_mask[row_i, j]),
+                int(artifact_mask[row_i]),
             ]
         writer.writerow(row)
 

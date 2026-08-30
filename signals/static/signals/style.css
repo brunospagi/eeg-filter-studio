@@ -257,6 +257,41 @@ body {
 .swatch.band-alpha { background: #38bdf8; }
 .swatch.band-beta { background: #fbbf24; }
 .swatch.band-gamma { background: #fb7185; }
+.swatch.artifact { background: rgba(239,68,68,0.35); border: 1px solid #ef4444; height: 10px; width: 14px; border-radius: 2px; }
+
+.artifact-toggle { margin-left: 8px; }
+.artifact-toggle.active { background: #ef4444; border-color: #ef4444; color: #fff; }
+
+.artifacts-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 6px;
+  flex-wrap: wrap;
+}
+.artifacts-bar.hidden { display: none; }
+.artifacts-bar-label { font-size: 0.74rem; color: var(--text-dim); flex: 0 0 auto; }
+.artifacts-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.artifact-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(239,68,68,0.12);
+  border: 1px solid rgba(239,68,68,0.4);
+  color: var(--text);
+}
+.artifact-chip button {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+}
 
 .quality-banner {
   flex: 0 0 auto;
