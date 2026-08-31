@@ -163,7 +163,7 @@ def list_tests() -> list[dict]:
 
 def delete_test(token: str) -> None:
     safe_token = _safe_token(token)
-    for suffix in (".npz", ".markers.json", ".meta.json"):
+    for suffix in (".npz", ".markers.json", ".meta.json", ".artifacts.json"):
         p = cache_dir() / f"{safe_token}{suffix}"
         if p.exists():
             p.unlink()
@@ -198,4 +198,26 @@ def load_session(token: str) -> dict:
     result["participant_name"] = meta.get("participant_name")
     result["sex"] = meta.get("sex")
     result["age"] = meta.get("age")
+
+    artifacts_path = cache_dir() / f"{safe_token}.artifacts.json"
+    result["artifact_ranges"] = json.loads(artifacts_path.read_text(encoding="utf-8")) if artifacts_path.exists() else []
     return result
+
+
+def save_artifacts(token: str, ranges: list) -> None:
+    """Persist manually-marked artifact time ranges ([t0, t1] pairs, seconds)
+    for a registered test -- visual identification of blinks/jaw-clench/etc.
+    *before* the FFT/bandpass step, per Anghinah et al.'s recommendation for
+    quantitative EEG. Stored alongside the recording so every endpoint that
+    loads this token picks them up automatically, same as markers."""
+    safe_token = _safe_token(token)
+    if not (cache_dir() / f"{safe_token}.npz").exists():
+        raise ParseError("Sessão expirada ou não encontrada. Faça upload do CSV novamente.")
+    cleaned = []
+    for r in ranges or []:
+        if not isinstance(r, (list, tuple)) or len(r) != 2:
+            continue
+        t0, t1 = float(r[0]), float(r[1])
+        cleaned.append([min(t0, t1), max(t0, t1)])
+    artifacts_path = cache_dir() / f"{safe_token}.artifacts.json"
+    artifacts_path.write_text(json.dumps(cleaned), encoding="utf-8")
