@@ -58,6 +58,34 @@ Veja `.env.example` para a lista completa. As principais:
 | `DJANGO_ALLOWED_HOSTS` | hosts permitidos, separados por vírgula |
 | `DJANGO_SUPERUSER_USERNAME/PASSWORD/EMAIL` | conta admin criada automaticamente no primeiro start |
 
+## Verificações de qualidade (`signals/quality.py`)
+
+Antes de calcular RMS ou bandas, rode `check_recording(raw, fs)` sobre o sinal **bruto** (µV, amostras × canais):
+
+```python
+from signals.quality import check_recording
+rep = check_recording(raw, fs=250)
+rep.ok      # False se algum critério falhar
+rep.flags   # lista legível dos critérios reprovados
+```
+
+| Verificação | Critério padrão |
+|---|---|
+| Interferência de rede (60 Hz) | amplitude de pico < 100 µV |
+| Saturação do ADS1299 (±187.500 µV) | nenhuma amostra; canais 100 % saturados = mortos |
+| Canais idênticos | DP da diferença entre canais < 20 µV |
+| Continuidade (saltos de amostra) | nenhum salto de fase da portadora de rede |
+| Transiente de borda | RMS(0–1 s) / RMS(2–10 s) ≤ 3 |
+
+Os limiares ficam em `DEFAULT_CRITERIA` e podem ser sobrescritos via `criteria={...}`.
+Comparativo entre gravações (uma linha por arquivo, nomes trocados por P01, P02…):
+
+```bash
+python manage.py quality_report pasta_dos_csvs/ --codes --until-marker 5 --csv qualidade.csv
+```
+
+Testes: `python manage.py test signals` (ou `python -m unittest signals.tests_quality`).
+
 ## Estrutura do projeto
 
 ```
